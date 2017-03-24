@@ -1,0 +1,277 @@
+---
+title: "Rna-seq analysis"
+author: "kzaitsev"
+date: "March 11, 2017"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(dplyr)
+library(VennDiagram)
+options(width=120)
+```
+
+## Файлы с которыми будем работать сегодня
+
+В ходе данной лекции нам понадобятся следующие файлы "GSE89225_illumina_counts.csv", "conditions.csv", "human_mart.txt". Для начала убедимся в том, что мы можем эти файлы прочитать. И посмотрим, что в них находится.
+
+```{r load}
+counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
+counts$treg_NBP_patient3 <- NULL
+conditions <- read.csv("conditions.csv", row.names=1)
+conditions <- conditions[-which(rownames(conditions)=="treg_NBP_patient3"),]
+mart <- read.table("human_mart.txt", sep="\t", header=1, check.names = F)
+
+print(counts[1:6, 1:2])
+dim(counts)
+
+head(conditions)   #sample tissue cells
+dim(conditions)
+
+head(mart)
+dim(mart)
+```
+
+# RNA-seq
+
+Rna-seq steps:
+
+* Изоляция РНК
+* __Rna selection / depletion__
++ __Фрагментация__
+* Синтез кДНК
+* Секвенирование
+
+Rna selection / depletion:
+
+* вся РНК
+* тянем за поли(А)-хвосты (только мРНК)
+* удаляем рибосомальную РНК (ribo-zero kit)
+* таргетное секвенирование
+
+Why Rna-seq?
+
+* Не ограничены существующей сборкой и дизайном микрочипа
+* Низкий фоновый сигнал (больше точность)
+* Точность позволяет смотреть экспрессию отдельных изоформ
+
+# Sanity checks
+Нужно всегда проверять длины библиотек и количество rRNA reads, которые оказались в библиотеке. Количество ридов можно проверять после выравнивания или после квантификации.
+
+```{r sanity_check}
+proteinCoding <- mart[mart[, 3] == "protein_coding", ]
+rRNA <- mart[mart[, 3] == "rRNA", ]
+
+pcCounts <- counts[rownames(counts) %in% as.character(proteinCoding[, 1]), ] # собраны каунты для ррнк и кодирующих последовательностей
+rrnaCounts <- counts[rownames(counts) %in% as.character(rRNA[, 1]), ]
+
+sampleCount <- ncol(counts)
+toPlot <- data.frame(
+  sample=rep(colnames(counts), 3),
+  value=c(colSums(counts) - colSums(pcCounts) - colSums(rrnaCounts), 
+          colSums(pcCounts), 
+          colSums(rrnaCounts)),
+  type=c(rep("other", sampleCount), 
+         rep("protein coding", sampleCount),
+         rep("rrna", sampleCount))
+)
+
+plot <- ggplot(data=toPlot, aes(x=sample, y=value, fill=type)) +
+  geom_bar(stat="identity") + theme_bw() + 
+  theme(axis.text.x = element_text(angle=90, vjust=0.5))
+plot
+
+```
+
+
+# DESeq2
+DESeq2 -- это царь-библиотека необходимая для работы с данными RNA-seq. Тут и дифференциальная экспрессия, и нормализации, и PCA-plots.
+
+```{r deseq_prep, cache=TRUE, message=FALSE}
+# Тут сравниваем по клеткам
+dds <- DESeqDataSetFromMatrix(countData = counts, # передаем то, что мы насчитали
+                              colData = conditions,
+                              design = ~ tissue + cells)   # то, что последнее - на это сравниваем. В данном случае -- внутри групп
+dds <- dds[rowSums(counts(dds)) > 20, ]  # выкидываем малоэкспрессированные гены
+dds <- DESeq(dds)
+vst_dds <- vst(dds)           # эти две строчки -- для визуализации
+counts.norm <- assay(vst_dds)
+
+# Сравним по тканям
+dds_2 <- DESeqDataSetFromMatrix(countData = counts, # передаем то, что мы насчитали
+                              colData = conditions,
+                              design = ~ cells + tissue)   # то, что последнее - на это сравниваем. В данном случае -- внутри групп
+dds_2 <- dds_2[rowSums(counts(dds_2)) > 20, ]  # выкидываем малоэкспрессированные гены
+dds_2 <- DESeq(dds_2)
+vst_dds_2 <- vst(dds_2)           # эти две строчки -- для визуализации
+counts.norm_2 <- assay(vst_dds_2)
+```
+
+```{r PCA}
+pca_data <- prcomp(t(counts.norm))
+percents <- pca_data$sdev^2 / sum(pca_data$sdev^2)
+to_plot <- t(counts.norm) %*% pca_data$rotation
+
+gdata <- data.frame(
+  x=to_plot[, 1],
+  y=to_plot[, 2],
+  tissue=conditions[, 1],
+  cells=conditions[, 2],
+  name=rownames(conditions)
+)
+
+ggplot(data=gdata, aes(x=x, y=y, color=cells, shape=tissue, label=name)) +
+  geom_point(size=3) + theme_bw() + 
+  xlab(paste0("PC", 1, ": ", formatC(100 * percents[1], digits=4), "%")) +
+  ylab(paste0("PC", 2, ": ", formatC(100 * percents[2], digits=4), "%"))
+
+plotPCA(vst_dds, intgroup=c("tissue", "cells"), ntop=1000) + theme_bw()  # топ-500 генов по вариации -- именно по ним строится PCA
+
+```
+
+# Differential expression
+Давайте посмотрим, как выглядят результаты дифференциальной экспрессии и отсортируем их по статистике.
+
+```{r diff_exp}
+res <- results(dds)
+res
+mcols(res)$description
+res <- res[order(res[, 4]), ]    # иногда в p-value будет NA потому что экспрессия и разница экспрессии очень низкая
+res
+
+res_2 <- results(dds_2)
+res_2
+mcols(res_2)$description
+res_2 <- res_2[order(res_2[, 4]), ]    # иногда в p-value будет NA потому что экспрессия и разница экспрессии очень низкая
+res_2
+```
+
+Самый обычный способ визуализировать данные дифф.экспрессии -- это volcano plot. По оси x мы будем откладывать log fold change, а по y - adjusted p value.
+
+```{r volcano_plot}
+gdata <- na.omit(data.frame(
+  x=res$log2FoldChange,
+  y=-log10(res$padj),
+  k=rep("Treg vs Tconv", length(res$log2FoldChange))
+))
+gdata_2 <- na.omit(data.frame(
+  x=res_2$log2FoldChange,
+  y=-log10(res_2$padj),
+  k=rep("Breast tumor vs Normal breast tissue", length(res$log2FoldChange))
+))
+gdata <- rbind(gdata, gdata_2)
+  
+gdata$Significance <- as.factor(ifelse(gdata$y < 2, "Not significant", "Significant"))
+
+ggplot(data=gdata, aes(x=x, y=y, col=Significance)) +
+  geom_point(size=1) + theme_bw() + facet_grid(. ~ k) +
+  xlab("Log fold change") +
+  ylab("Adjusted p.value") +
+  scale_colour_manual(values = c("black", "red")) +
+  geom_line(aes(y = 2), colour = "red", linetype="dashed")
+```
+
+Также мы можем построить тепловую карту отсортировав гены по статистике
+
+```{r heatmap}
+
+counts.norm <- counts(dds, normalized=TRUE)
+png("heatmap_large.png", width=6, height=20, units="in", res=300)
+
+to_visualise <- counts.norm[rownames(res), order(conditions[, 2])]
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+pheatmap(to_visualise, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions)
+dev.off()
+
+```
+
+# clusterProfiler
+
+Библиотека содержит в себе большое количество утилит для аннотации наборов генов.
+
+```{r clusterProfiler}
+
+genes <- bitr(rownames(res),
+              fromType = "ENSEMBL",
+              toType = c("ENTREZID", "SYMBOL"), 
+              OrgDb = org.Hs.eg.db)
+head(genes)
+
+
+genes <- genes[!duplicated(genes[, 1]), ]  # оставим только первую строчку
+rownames(genes) <- genes[, 1]
+res$ENSEMBL <- rownames(res)
+
+merged <- merge(as.data.frame(res), genes)
+head(merged)
+```
+
+Давайте что-нибудь узнаем о дифф.экспрессированных генах!
+
+```{r go_annot}
+
+diffExpGenes <- merged[which(merged$padj < 0.01), 8] # возьмем только дифф экспресс гены
+universe <- as.character(merged[, 8])
+
+ego <- enrichGO(gene          = diffExpGenes,
+                universe      = universe,
+                OrgDb         = org.Hs.eg.db, 
+                ont           = "BP", # указываем нужную базу данных (Biological Processes)
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05,
+        readable      = TRUE)
+# head(ego)
+dotplot(ego)
+
+
+```
+
+Построим свой heatmap с генами из нужного пасвэя
+```{r go_heatmap, fig.height=15, fig.width=7}
+kkeys <- keys(org.Hs.eg.db, keytype="ENSEMBL")
+goAnno <- AnnotationDbi::select(org.Hs.eg.db, keys=kkeys, 
+                                keytype="ENSEMBL", columns=c("GOALL", "ONTOLOGYALL", "SYMBOL"))
+goAnno <- tbl_df(goAnno)
+goAnno <- filter(goAnno, GOALL=="GO:0007159")
+# or you can pick ENTREZ, or SYMBOL, or whatever you want
+
+genesToVisualise <- as.vector(goAnno$ENSEMBL)
+
+to_visualise <- counts.norm[rownames(res[order(res[, 4]),]), order(conditions[, 2])]
+vis_fin <- to_visualise[row.names(to_visualise) %in% genesToVisualise ,]
+vis_fin <- t(apply(vis_fin, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+pheatmap(vis_fin, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions)
+
+
+```
+#Диаграммы Венна для дифф.экспрессированых генов в двух сравнениях
+```{r venn}
+resa <- na.omit(res)
+resa_2 <- na.omit(res_2)
+commonLetters <- intersect(rownames(resa[resa$padj<0.01,]), rownames(resa_2[resa_2$padj<0.01,]))
+draw.pairwise.venn(nrow(resa[resa$padj<0.01,]), nrow(resa_2[resa_2$padj<0.01,]), length(commonLetters),
+                   category = c("Treg vs Tconv", "Tumor tissue vs Normal tissue"), 
+                   fill = c("light blue", "pink"),
+                   cat.pos = c(0, 0),
+                   cat.dist = c(0.03, 0.09))
+
+```
+
