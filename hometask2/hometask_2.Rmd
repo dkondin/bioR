@@ -1,0 +1,103 @@
+---
+title: "hometask_2"
+author: "Диана Кондинская"
+date: "March 30, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(amap)
+library(dbscan)
+options(width=120)
+```
+#Иерархическая кластеризация
+Загружаем данные с аутлаером:
+```{r load_out}
+counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
+conditions <- read.csv("conditions.csv", row.names=1)
+```
+Создаем dds-объект и возьмем только первые 8000 генов:
+```{r deseq_prep, cache=TRUE, message=FALSE}
+# Тут сравниваем по клеткам
+dds <- DESeqDataSetFromMatrix(countData = counts, # передаем то, что мы насчитали
+                              colData = conditions,
+                              design = ~ tissue + cells)   # то, что последнее - на это сравниваем. В данном случае -- внутри групп
+dds <- dds[1:8000, ]
+
+```
+Пролагорифимируем значения counts, вычтем их из единицы и рассчитаем dist:
+```{r log_out}
+dds_log <- rlog(counts(dds))
+dds_cor <- cor(dds_log) 
+dds_uncor <- 1 - dds_cor
+dds_dist <- dist(dds_uncor)
+```
+Кластеризуем и нарисуем:
+```{r hier_clust}
+clusters_av <- hclust(dds_dist, method = "average")
+clusters_comp <- hclust(dds_dist, method = "complete")
+clusters_sing <- hclust(dds_dist, method = "single")
+plot(clusters_av)
+plot(clusters_comp)
+plot(clusters_sing)
+```
+
+#K-means
+Загружаем данные без аутлаера:
+```{r load_no_out}
+counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
+counts$treg_NBP_patient3 <- NULL
+conditions <- read.csv("conditions.csv", row.names=1)
+conditions <- conditions[-which(rownames(conditions)=="treg_NBP_patient3"),]
+```
+Создаем dds-объект:
+```{r deseq_prep_no_out, cache=TRUE, message=FALSE}
+# Тут сравниваем по клеткам
+dds <- DESeqDataSetFromMatrix(countData = counts[1:8000, ], # передаем то, что мы насчитали
+                              colData = conditions,
+                              design = ~ tissue + cells) 
+dds <- DESeq(dds)
+```
+Прологарифмируем и кластеризуем:
+```{r Kmeans, cache=T}
+dds_log <- rlog(counts(dds))
+clustering <- Kmeans(dds_log, 6, method="correlation", iter.max=20000)
+clus <- clustering$cluster
+```
+Нарисуем heatmap
+```{r heatmap, fig.height=15, cache=T}
+vst_dds <- vst(dds)           
+counts.norm <- assay(vst_dds)
+res <- results(dds)
+
+to_visualise <- counts.norm[rownames(res[order(clus),] ), order(conditions$cells, conditions$tissue)]
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+row_annotation <- data.frame(cluster=clus[order(clus)])
+row_annotation$cluster <- as.factor(row_annotation$clus )
+rownames(row_annotation) <- rownames(res[order(clus),])
+pheatmap(to_visualise, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions,
+         annotation_row = row_annotation)
+
+```
+
+#Density based algortihms
+
+Собственно, применим dbscan:
+```{r dbscan, cache=T}
+db <- read.csv("projection.csv", row.names = 1)
+ggplot(db, aes(x=TSNE.1, y=TSNE.2))+geom_point()+theme_bw()
+res_clust <- dbscan(db, eps=4, minPts = 3)
+db$cluster <- as.factor(res_clust$cluster)
+ggplot(db, aes(x=TSNE.1, y=TSNE.2, col=cluster))+geom_point()+theme_bw()
+```
+
+В итоге, оптимальное значение для радиуса -- `r res_clust$eps`, для минимального количества точек -- `r res_clust$minPts`. 
