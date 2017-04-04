@@ -19,12 +19,13 @@ options(width=120)
 counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
 conditions <- read.csv("conditions.csv", row.names=1)
 ```
-Создаем dds-объект и возьмем только первые 8000 генов:
+Создаем dds-объект и возьмем только первые 8000 наиболее экспрессированных генов:
 ```{r deseq_prep, cache=TRUE, message=FALSE}
 # Тут сравниваем по клеткам
-dds <- DESeqDataSetFromMatrix(countData = counts, # передаем то, что мы насчитали
+dds <- DESeqDataSetFromMatrix(countData = counts, 
                               colData = conditions,
-                              design = ~ tissue + cells)   # то, что последнее - на это сравниваем. В данном случае -- внутри групп
+                              design = ~ tissue + cells)  
+dds <- dds[order(rowSums(counts(dds)), decreasing=T), ]
 dds <- dds[1:8000, ]
 
 ```
@@ -56,9 +57,11 @@ conditions <- conditions[-which(rownames(conditions)=="treg_NBP_patient3"),]
 Создаем dds-объект:
 ```{r deseq_prep_no_out, cache=TRUE, message=FALSE}
 # Тут сравниваем по клеткам
-dds <- DESeqDataSetFromMatrix(countData = counts[1:8000, ], # передаем то, что мы насчитали
+dds <- DESeqDataSetFromMatrix(countData = counts,
                               colData = conditions,
                               design = ~ tissue + cells) 
+dds <- dds[order(rowSums(counts(dds)), decreasing=T), ]
+dds <- dds[1:8000, ]
 dds <- DESeq(dds)
 ```
 Прологарифмируем и кластеризуем:
