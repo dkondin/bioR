@@ -1,0 +1,212 @@
+---
+title: "RandomForest"
+author: "dkondin"
+date: "May 8, 2017"
+output: html_document
+---
+### Подключение библиотек
+```{r setup, message=FALSE, warning=FALSE}
+library(randomForest)
+library(ggplot2)
+```
+
+### Загрузка данных
+Загрузим данные и заменим в них пропущенные значения на 0.
+```{r data}
+ages <- read.table("ages.tsv", sep="\t", header=1)
+methylation <- read.table("methylation.tsv", sep="\t", header=1, row.names = 1, na.strings = "NA")
+methylation[is.na(methylation)] <- 0
+```
+
+### Предподготовка данных
+```{r correlation}
+meth <- t(methylation[, 4:ncol(methylation)])
+cor_age_meth <- apply(meth, 2, function(x) cor(as.numeric(x), ages$Age))
+top_ten <- cor_age_meth[order(abs(cor_age_meth), decreasing = TRUE)][1:10]
+meth <- meth[,names(top_ten)]
+
+fin <- as.data.frame(cbind(age=ages$Age, meth))
+rownames(fin) <- ages$Sample
+
+set.seed(42685)
+
+training <- sample(1:50, 40)
+validation <- (1:50)[-training]
+
+train <- fin[training, -1]
+valid <- fin[validation, -1]
+
+train.response <- fin[training, 1]
+valid.response <- fin[validation, 1]
+```
+
+### Функция-обертка
+
+Напишем функцию, которая позволит нам много раз прогонять обучение с самыми разными параметрами.
+
+```{r functions}
+
+mean_err <- function(fit, data, response) {
+  err <- lapply(fit, function(x) sqrt( sum((predict(x, data) - response) ** 2) / length(response)))
+  return(mean(sapply(err, function(x) x)))
+}
+
+wrapper <- function(train.data, train.response,
+                    test.data, test.response, 
+                    runs.number=50, ...) {
+  runs <- seq(1, runs.number) 
+  fit.rf <- lapply(runs, function(x) randomForest(train.response ~ .,   data=train.data, ...))
+  train.err <- mean_err(fit.rf, train.data, train.response) 
+
+  test.err <- mean_err(fit.rf, test.data, test.response) 
+  return(c(train.err, test.err))
+}
+
+p <- wrapper(train, train.response, valid, valid.response)
+p
+```
+
+Попробуем улучшить предсказания на тестовой выборке.
+
+### Оптимизация
+
+Оптимизируем количество деревьев:
+
+```{r ntree, cache=T}
+tree_num <- seq(1, 1000, 5)
+ntrees <- sapply(tree_num, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, ntree=x))
+
+toPlot <- rbind(
+    data.frame(trees=tree_num, SSE=ntrees[1,], dataset="Train"),
+    data.frame(trees=tree_num, SSE=ntrees[2,], dataset="Validation")
+  )
+  
+ggplot(data=toPlot, aes(x=trees, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Trees") +
+    theme_bw() + scale_y_continuous(breaks=seq(0, 20, 2))
+
+NTREE <- 700
+```
+
+Зафиксируем значение количества дерьев: `r NTREE`
+
+### REPLAСE and SAMPSIZE
+
+Посмотрим, какие параметры для replace и sampsize делают наше обучение лучше:
+
+```{r nsamp, cache=T}
+nsamp = seq(1, 40, 1)
+nsamps_true <- sapply(nsamp, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=T, sampsize=x, ntree=NTREE, nodesize=1, mtry=10))
+nsamps_false <- sapply(nsamp, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=F, sampsize=x, ntree=NTREE, nodesize=1, mtry=10))
+
+
+toPlot_true <- rbind(
+    data.frame(samples=nsamp, SSE=nsamps_true[1,], dataset="Train"),
+    data.frame(samples=nsamp, SSE=nsamps_true[2,], dataset="Validation")
+     )
+
+toPlot_false <- rbind(
+    data.frame(samples=nsamp, SSE=nsamps_false[1,], dataset="Train"),
+    data.frame(samples=nsamp, SSE=nsamps_false[2,], dataset="Validation")
+     )
+
+ggplot(data=toPlot_true, aes(x=samples, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Samplesize True") +
+    theme_bw() 
+
+
+ggplot(data=toPlot_false, aes(x=samples, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Samplesize False") +
+    theme_bw()
+
+REPLACE <- TRUE
+NSAMP <- 40
+```
+
+Сильнее переобучается модель, в которой установлен параметр replace=F. Поэтому установим replace = `r REPLACE` и sampsize = `r NSAMP`.
+
+### NODESIZE
+
+Оптимизируем возможное количество образцов в листьях.
+
+```{r nodesize, cache=T}
+nnode <-  seq(1, 40, 1)
+nnodes <- sapply(nnode, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=x, mtry=10))
+
+toPlot_node <- rbind(
+    data.frame(nodes=nnode, SSE=nnodes[1,], dataset="Train"),
+    data.frame(nodes=nnode, SSE=nnodes[2,], dataset="Validation")
+     )
+
+ggplot(data=toPlot_node, aes(x=nodes, y=SSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("SSE Plot Nodes") +
+    theme_bw()
+NNODE <- 1
+```
+
+Переобучения здесь вроде нет. Установим nodesize = `r NNODE`.
+
+### MTRY
+
+```{r mtry, cache=T}
+nmtry <- seq(1, 10, 1)
+nmtries <- sapply(nmtry, function(x) wrapper(train, train.response, valid, valid.response, runs.number = 100, replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=NNODE, mtry=x))
+
+toPlot_mtry <- rbind(
+    data.frame(mtry=nmtry, SSE=nmtries[1,], dataset="Train"),
+    data.frame(mtry=nmtry, SSE=nmtries[2,], dataset="Validation")
+     )
+
+ggplot(data=toPlot_mtry, aes(x=mtry, y=SSE, color=dataset)) +
+    geom_point(size=3) + 
+    geom_line(size=2) + ggtitle("SSE Plot Mtry") +
+    theme_bw()
+NMTRY <- 2
+```
+
+Переобучение здесь бросается в глаза с значения mtry=4. Установим mtry=`r NMTRY`
+
+### CROSS VALIDATION
+
+Проведем кросс-валидацию с установленными параметрами и сравним с результатами, полученными с параметрами по умолчанию.
+
+```{r cross_val}
+data <- fin[,-1]
+response <- fin[, 1]
+cross.validation <- matrix(sample(1:50, 50), nrow=5, ncol=10)
+
+cross.results <- apply(cross.validation, 1, function(test.sample){
+  # using each part as testing dataset
+  # using rest of the dataset as training dataset
+  train.sample <- (1:50)[-test.sample]
+  train.data <- data[train.sample, ]
+  train.response <- response[train.sample]
+  test.data <- data[test.sample, ]
+  test.response <- response[test.sample]
+  
+  # calculating RMSE for every part and default random forest
+  return(wrapper(train.data, train.response, test.data, test.response, 100,  replace=REPLACE, sampsize=NSAMP, ntree=NTREE, nodesize=NNODE, mtry=NMTRY))
+})
+
+cross.results.def <- apply(cross.validation, 1, function(test.sample){
+  # using each part as testing dataset
+  # using rest of the dataset as training dataset
+  train.sample <- (1:50)[-test.sample]
+  train.data <- data[train.sample, ]
+  train.response <- response[train.sample]
+  test.data <- data[test.sample, ]
+  test.response <- response[test.sample]
+  
+  # calculating RMSE for every part and default random forest
+  return(wrapper(train.data, train.response, test.data, test.response, 100))
+})
+print(rowMeans(cross.results))
+print(rowMeans(cross.results) - rowMeans(cross.results.def))
+
+```
+
+Стало чуть получше. 
