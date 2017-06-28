@@ -1,0 +1,103 @@
+---
+title: "homework cnn"
+author: "dkondin"
+date: "June 26, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Подключим нужные библиотеки:
+
+```{r libs}
+library(OpenImageR)
+library(mxnet)
+```
+
+##Подготовка данных
+
+Считаем csv и изображения, увеличим размер выборки:
+
+```{r reads}
+patch_labels <- read.csv("patch_labels.csv", head=F)
+image.files <- list.files("patches/")
+data <- as.data.frame(cbind(image.files, patch_labels))
+names(data) <- c("file_name", "type")
+
+data.dims <- dim(data)
+features <- 61 * 61
+dataset.size <- 50 * data.dims[1]
+nn.data.x <- matrix(0, nrow=dataset.size, ncol=features)
+nn.data.y <- vector(length=dataset.size)
+
+for (i in 1:data.dims[1]) {
+  image <- as.character(data[i, ]$file_name)
+  image <- readImage(sprintf("patches/%s", image))
+  nn.data.x[(i-1)*50 + 1, ] <- as.numeric(image)
+  nn.data.y[(i-1)*50 + 1] <- data[i, ]$type
+  for (j in 1:49) {
+    patchAugmented <- Augmentation(image, flip_mode = "horizontal",
+             shift_cols = sample(1:20, 1), shift_rows = sample(1:20, 1),
+             rotate_angle = sample(1:180, 1), rotate_method = 'bilinear', 
+             zca_comps = 30, zca_epsilon = 0.1, threads = 1, verbose = F)
+    nn.data.x[(i-1)*50 + j+1, ] <- as.numeric(patchAugmented)
+    nn.data.y[(i-1)*50 + j+1] <- data[i, ]$type
+  }
+}
+
+```
+
+Организуем выборки:
+```{r samples, cache=TRUE}
+training.size <- 134 * 50
+training.set <- sample(1:dataset.size, training.size)
+validation.set <- (1:dataset.size)[-training.set]
+
+nn.train.x <- nn.data.x[training.set, ]
+nn.train.y <- nn.data.y[training.set]
+nn.test.x <- nn.data.x[validation.set, ]
+nn.test.y <- nn.data.y[validation.set]
+
+train.array <- t(nn.train.x)
+dim(train.array) <- c(61, 61, 1, ncol(train.array))
+test.array <- t(nn.test.x)
+dim(test.array) <- c(61, 61, 1, ncol(test.array))
+
+```
+
+Опишем архитектуру сети:
+
+```{r network}
+mx.set.seed(1)
+data <- mx.symbol.Variable('data')
+conv0 <- mx.symbol.Convolution(data = data, kernel = c(5, 5), num_filter = 10)
+tanh0 <- mx.symbol.LeakyReLU(conv0, slope=0)
+pool0 <- mx.symbol.Pooling(data=tanh0, kernel=c(2, 2), stride=c(2, 2), pool.type="max")
+conv1 <- mx.symbol.Convolution(data = pool0, kernel = c(5, 5), num_filter = 10)
+tanh1 <- mx.symbol.LeakyReLU(conv1, slope=0)
+pool1 <- mx.symbol.Pooling(data=tanh1, kernel=c(2, 2), stride=c(2, 2), pool.type="max")
+fc1 <- mx.symbol.FullyConnected(data = pool1, num_hidden = 3)
+nn.model <- mx.symbol.SoftmaxOutput(data = fc1)
+```
+
+Обучим и посмотрим, что получилось:
+
+```{r run}
+mx.set.seed(1)
+model <- mx.model.FeedForward.create(nn.model, 
+                                     X=train.array, 
+                                     y=as.array(nn.train.y-1),
+                                     eval.data = list(
+                                       data=test.array,
+                                       label=as.array(nn.test.y-1)
+                                     ),
+                                     ctx=mx.cpu(), 
+                                     num.round = 100,
+                                     optimizer="adadelta",
+                                     eval.metric = mx.metric.accuracy,
+                                     epoch.end.callback = mx.callback.log.train.metric(10))
+```
+
+
