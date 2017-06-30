@@ -51,8 +51,9 @@ for (i in 1:data.dims[1]) {
 
 Организуем выборки:
 ```{r samples, cache=TRUE}
-training.size <- 134 * 50
-training.set <- sample(1:dataset.size, training.size)
+training.size <- 134
+training.setq <- sample(data.dims[1], training.size)
+training.set <- as.numeric(sapply(training.setq, function(x) (50*(x-1)+1):(50*(x-1)+50)))
 validation.set <- (1:dataset.size)[-training.set]
 
 nn.train.x <- nn.data.x[training.set, ]
@@ -64,7 +65,6 @@ train.array <- t(nn.train.x)
 dim(train.array) <- c(61, 61, 1, ncol(train.array))
 test.array <- t(nn.test.x)
 dim(test.array) <- c(61, 61, 1, ncol(test.array))
-
 ```
 
 Опишем архитектуру сети:
@@ -73,10 +73,10 @@ dim(test.array) <- c(61, 61, 1, ncol(test.array))
 mx.set.seed(1)
 data <- mx.symbol.Variable('data')
 conv0 <- mx.symbol.Convolution(data = data, kernel = c(5, 5), num_filter = 10)
-tanh0 <- mx.symbol.LeakyReLU(conv0, slope=0)
+tanh0 <- mx.symbol.Activation(data = conv0, act_type = "tanh")
 pool0 <- mx.symbol.Pooling(data=tanh0, kernel=c(2, 2), stride=c(2, 2), pool.type="max")
 conv1 <- mx.symbol.Convolution(data = pool0, kernel = c(5, 5), num_filter = 10)
-tanh1 <- mx.symbol.LeakyReLU(conv1, slope=0)
+tanh1 <- mx.symbol.Activation(data = conv1, act_type = "tanh")
 pool1 <- mx.symbol.Pooling(data=tanh1, kernel=c(2, 2), stride=c(2, 2), pool.type="max")
 fc1 <- mx.symbol.FullyConnected(data = pool1, num_hidden = 3)
 nn.model <- mx.symbol.SoftmaxOutput(data = fc1)
