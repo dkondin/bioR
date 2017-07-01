@@ -131,8 +131,14 @@ library(mxnet)</code></pre>
 <h2>Подготовка данных</h2>
 <p>Считаем csv и изображения, увеличим размер выборки:</p>
 <pre class="r"><code>patch_labels &lt;- read.csv(&quot;patch_labels.csv&quot;, head=F)
-image.files &lt;- list.files(&quot;patches/&quot;)
-data &lt;- as.data.frame(cbind(image.files, patch_labels))
+#image.files &lt;- list.files(&quot;patches/&quot;)
+image.files &lt;- list()
+for (i in 1:168) {
+   file_name &lt;- paste0(&quot;patch&quot;, i, &quot;.jpg&quot;)
+   image.files[i] &lt;- file_name
+}
+
+data &lt;- as.data.frame(cbind(as.vector(unlist(image.files)), patch_labels))
 names(data) &lt;- c(&quot;file_name&quot;, &quot;type&quot;)
 
 data.dims &lt;- dim(data)
@@ -148,7 +154,7 @@ for (i in 1:data.dims[1]) {
   nn.data.y[(i-1)*50 + 1] &lt;- data[i, ]$type
   for (j in 1:49) {
     patchAugmented &lt;- Augmentation(image, flip_mode = &quot;horizontal&quot;,
-             shift_cols = sample(1:20, 1), shift_rows = sample(1:20, 1),
+             shift_cols = sample(-10:10, 1), shift_rows = sample(-10:10, 1),
              rotate_angle = sample(1:180, 1), rotate_method = 'bilinear', 
              zca_comps = 30, zca_epsilon = 0.1, threads = 1, verbose = F)
     nn.data.x[(i-1)*50 + j+1, ] &lt;- as.numeric(patchAugmented)

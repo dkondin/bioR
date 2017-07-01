@@ -22,8 +22,14 @@ library(mxnet)
 
 ```{r reads}
 patch_labels <- read.csv("patch_labels.csv", head=F)
-image.files <- list.files("patches/")
-data <- as.data.frame(cbind(image.files, patch_labels))
+#image.files <- list.files("patches/")
+image.files <- list()
+for (i in 1:168) {
+   file_name <- paste0("patch", i, ".jpg")
+   image.files[i] <- file_name
+}
+
+data <- as.data.frame(cbind(as.vector(unlist(image.files)), patch_labels))
 names(data) <- c("file_name", "type")
 
 data.dims <- dim(data)
@@ -39,7 +45,7 @@ for (i in 1:data.dims[1]) {
   nn.data.y[(i-1)*50 + 1] <- data[i, ]$type
   for (j in 1:49) {
     patchAugmented <- Augmentation(image, flip_mode = "horizontal",
-             shift_cols = sample(1:20, 1), shift_rows = sample(1:20, 1),
+             shift_cols = sample(-10:10, 1), shift_rows = sample(-10:10, 1),
              rotate_angle = sample(1:180, 1), rotate_method = 'bilinear', 
              zca_comps = 30, zca_epsilon = 0.1, threads = 1, verbose = F)
     nn.data.x[(i-1)*50 + j+1, ] <- as.numeric(patchAugmented)
